@@ -59,11 +59,11 @@ use stp258_traits::{
 	account::MergeAccount,
 	arithmetic::{self, Signed},
 	BalanceStatus, GetByKey, 
-	LockIdentifier, OnDust, 
-	Stp258Currency, 
-	Stp258CurrencyExtended, 
-	Stp258CurrencyReservable,
-	Stp258CurrencyLockable,
+	LockIdentifier, OnStp258Dust, 
+	Stp258StableCurrency, 
+	Stp258StableCurrencyExtended, 
+	Stp258StableCurrencyLockable,
+	Stp258StableCurrencyReservable,
 };
 use sp_runtime::{
 	traits::{
@@ -85,21 +85,21 @@ mod mock;
 mod tests;
 
 pub struct TransferDust<T, GetAccountId>(marker::PhantomData<(T, GetAccountId)>);
-impl<T, GetAccountId> OnDust<T::AccountId, T::CurrencyId, T::Balance> for TransferDust<T, GetAccountId>
+impl<T, GetAccountId> OnStp258Dust<T::AccountId, T::CurrencyId, T::BaseUnit> for TransferDust<T, GetAccountId>
 where
 	T: Config,
 	GetAccountId: Get<T::AccountId>,
 {
-	fn on_dust(who: &T::AccountId, currency_id: T::CurrencyId, amount: T::Balance) {
+	fn on_dust(who: &T::AccountId, currency_id: T::CurrencyId, amount: T::BaseUnit) {
 		// transfer the dust to treasury account, ignore the result,
 		// if failed will leave some dust which still could be recycled.
-		let _ = <Pallet<T> as Stp258Currency<T::AccountId>>::transfer(currency_id, who, &GetAccountId::get(), amount);
+		let _ = <Pallet<T> as Stp258StableCurrency<T::AccountId>>::transfer(currency_id, who, &GetAccountId::get(), amount);
 	}
 }
 
 pub struct BurnDust<T>(marker::PhantomData<T>);
-impl<T: Config> OnDust<T::AccountId, T::CurrencyId, T::Balance> for BurnDust<T> {
-	fn on_dust(who: &T::AccountId, currency_id: T::CurrencyId, amount: T::Balance) {
+impl<T: Config> OnStp258Dust<T::AccountId, T::CurrencyId, T::BaseUnit> for BurnDust<T> {
+	fn on_dust(who: &T::AccountId, currency_id: T::CurrencyId, amount: T::BaseUnit) {
 		// burn the dust, ignore the result,
 		// if failed will leave some dust which still could be recycled.
 		let _ = Pallet::<T>::withdraw(currency_id, who, amount);
@@ -171,6 +171,16 @@ pub mod module {
 		/// The balance type
 		type Balance: Parameter + Member + AtLeast32BitUnsigned + Default + Copy + MaybeSerializeDeserialize;
 
+		/// The amount of Stp258Currency that are meant to track the value.
+		type BaseUnit: AtLeast32BitUnsigned 
+			+ TryInto<Self::Balance> 
+			+ TryFrom<Self::Balance> 
+			+ FullCodec 
+			+ Copy 
+			+ MaybeSerializeDeserialize 
+			+ Debug 
+			+ Default;
+
 		/// The amount type, should be signed version of `Balance`
 		type Amount: Signed
 			+ TryInto<Self::Balance>
@@ -192,7 +202,7 @@ pub mod module {
 		type ExistentialDeposits: GetByKey<Self::CurrencyId, Self::Balance>;
 
 		/// Handler to burn or transfer account's dust
-		type OnDust: OnDust<Self::AccountId, Self::CurrencyId, Self::Balance>;
+		type OnDust: OnStp258Dust<Self::AccountId, Self::CurrencyId, Self::Balance>;
 	}
 
 	#[pallet::error]
@@ -327,7 +337,7 @@ pub mod module {
 		) -> DispatchResultWithPostInfo {
 			let from = ensure_signed(origin)?;
 			let to = T::Lookup::lookup(dest)?;
-			<Self as Stp258Currency<_>>::transfer(currency_id, &from, &to, amount)?;
+			<Self as Stp258StableCurrency<_>>::transfer(currency_id, &from, &to, amount)?;
 
 			Self::deposit_event(Event::Transferred(currency_id, from, to, amount));
 			Ok(().into())
@@ -345,8 +355,8 @@ pub mod module {
 		) -> DispatchResultWithPostInfo {
 			let from = ensure_signed(origin)?;
 			let to = T::Lookup::lookup(dest)?;
-			let balance = <Self as Stp258Currency<T::AccountId>>::free_balance(currency_id, &from);
-			<Self as Stp258Currency<T::AccountId>>::transfer(currency_id, &from, &to, balance)?;
+			let balance = <Self as Stp258StableCurrency<T::AccountId>>::free_balance(currency_id, &from);
+			<Self as Stp258StableCurrency<T::AccountId>>::transfer(currency_id, &from, &to, balance)?;
 
 			Self::deposit_event(Event::Transferred(currency_id, from, to, balance));
 			Ok(().into())
@@ -475,30 +485,30 @@ impl<T: Config> Pallet<T> {
 	}
 }
 
-impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
+impl<T: Config> Stp258StableCurrency<T::AccountId> for Pallet<T> {
 	type CurrencyId = T::CurrencyId;
-	type Balance = T::Balance;
+	type BaseUnit = T::BaseUnit;
 	
-	fn minimum_balance(currency_id: Self::CurrencyId) -> Self::Balance {
+	fn minimum_balance(currency_id: Self::CurrencyId) -> Self::BaseUnit {
 		T::ExistentialDeposits::get(&currency_id)
 	}
 
-	fn total_issuance(currency_id: Self::CurrencyId) -> Self::Balance {
+	fn total_issuance(currency_id: Self::CurrencyId) -> Self::BaseUnit {
 		<TotalIssuance<T>>::get(currency_id)
 	}
 	
-	fn total_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::Balance {
+	fn total_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::BaseUnit {
 		Self::accounts(who, currency_id).total()
 	}
 
-	fn free_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::Balance {
+	fn free_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::BaseUnit {
 		Self::accounts(who, currency_id).free
 	}
 
 	// Ensure that an account can withdraw from their free balance given any
 	// existing withdrawal restrictions like locks and vesting balance.
 	// Is a no-op if amount to be withdrawn is zero.
-	fn ensure_can_withdraw(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::Balance) -> DispatchResult {
+	fn ensure_can_withdraw(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::BaseUnit) -> DispatchResult {
 		if amount.is_zero() {
 			return Ok(());
 		}
@@ -520,7 +530,7 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 		currency_id: Self::CurrencyId,
 		from: &T::AccountId,
 		to: &T::AccountId,
-		amount: Self::Balance,
+		amount: Self::BaseUnit,
 	) -> DispatchResult {
 		if amount.is_zero() || from == to {
 			return Ok(());
@@ -541,7 +551,7 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 	/// Deposit some `amount` into the free balance of account `who`.
 	///
 	/// Is a no-op if the `amount` to be deposited is zero.
-	fn deposit(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::Balance) -> DispatchResult {
+	fn deposit(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::BaseUnit) -> DispatchResult {
 		if amount.is_zero() {
 			return Ok(());
 		}
@@ -557,7 +567,7 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 		})
 	}
 
-	fn withdraw(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::Balance) -> DispatchResult {
+	fn withdraw(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::BaseUnit) -> DispatchResult {
 		if amount.is_zero() {
 			return Ok(());
 		}
@@ -571,7 +581,7 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 	}
 
 	// Check if `value` amount of free balance can be slashed from `who`.
-	fn can_slash(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::Balance) -> bool {
+	fn can_slash(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::BaseUnit) -> bool {
 		if value.is_zero() {
 			return true;
 		}
@@ -585,7 +595,7 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 	/// should be used prior to `slash()` to avoid having to draw from
 	/// reserved funds, however we err on the side of punishment if things
 	/// are inconsistent or `can_slash` wasn't used appropriately.
-	fn slash(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::Balance) -> Self::Balance {
+	fn slash(currency_id: Self::CurrencyId, who: &T::AccountId, amount: Self::BaseUnit) -> Self::BaseUnit {
 		if amount.is_zero() {
 			return amount;
 		}
@@ -617,7 +627,7 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 	}
 }
 
-impl<T: Config> Stp258CurrencyExtended<T::AccountId> for Pallet<T> {
+impl<T: Config> Stp258StableCurrencyExtended<T::AccountId> for Pallet<T> {
 	type Amount = T::Amount;
 
 	fn update_balance(currency_id: Self::CurrencyId, who: &T::AccountId, by_amount: Self::Amount) -> DispatchResult {
@@ -634,7 +644,7 @@ impl<T: Config> Stp258CurrencyExtended<T::AccountId> for Pallet<T> {
 		};
 
 		let by_balance =
-			TryInto::<Self::Balance>::try_into(by_amount_abs).map_err(|_| Error::<T>::AmountIntoBalanceFailed)?;
+			TryInto::<Self::BaseUnit>::try_into(by_amount_abs).map_err(|_| Error::<T>::AmountIntoBalanceFailed)?;
 		if by_amount.is_positive() {
 			Self::deposit(currency_id, who, by_balance)
 		} else {
@@ -643,7 +653,7 @@ impl<T: Config> Stp258CurrencyExtended<T::AccountId> for Pallet<T> {
 	}
 }
 
-impl<T: Config> Stp258CurrencyLockable<T::AccountId> for Pallet<T> {
+impl<T: Config> Stp258StableCurrencyLockable<T::AccountId> for Pallet<T> {
 	type Moment = T::BlockNumber;
 
 	// Set a lock on the balance of `who` under `currency_id`.
@@ -652,7 +662,7 @@ impl<T: Config> Stp258CurrencyLockable<T::AccountId> for Pallet<T> {
 		lock_id: LockIdentifier,
 		currency_id: Self::CurrencyId,
 		who: &T::AccountId,
-		amount: Self::Balance,
+		amount: Self::BaseUnit,
 	) -> DispatchResult {
 		if amount.is_zero() {
 			return Ok(());
@@ -681,7 +691,7 @@ impl<T: Config> Stp258CurrencyLockable<T::AccountId> for Pallet<T> {
 		lock_id: LockIdentifier,
 		currency_id: Self::CurrencyId,
 		who: &T::AccountId,
-		amount: Self::Balance,
+		amount: Self::BaseUnit,
 	) -> DispatchResult {
 		if amount.is_zero() {
 			return Ok(());
@@ -715,11 +725,11 @@ impl<T: Config> Stp258CurrencyLockable<T::AccountId> for Pallet<T> {
 	}
 }
 
-impl<T: Config> Stp258CurrencyReservable<T::AccountId> for Pallet<T> {
+impl<T: Config> Stp258StableCurrencyReservable<T::AccountId> for Pallet<T> {
 	/// Check if `who` can reserve `value` from their free balance.
 	///
 	/// Always `true` if value to be reserved is zero.
-	fn can_reserve(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::Balance) -> bool {
+	fn can_reserve(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::BaseUnit) -> bool {
 		if value.is_zero() {
 			return true;
 		}
@@ -730,7 +740,7 @@ impl<T: Config> Stp258CurrencyReservable<T::AccountId> for Pallet<T> {
 	/// be slashed.
 	///
 	/// Is a no-op if the value to be slashed is zero.
-	fn slash_reserved(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::Balance) -> Self::Balance {
+	fn slash_reserved(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::BaseUnit) -> Self::BaseUnit {
 		if value.is_zero() {
 			return value;
 		}
@@ -742,7 +752,7 @@ impl<T: Config> Stp258CurrencyReservable<T::AccountId> for Pallet<T> {
 		value - actual
 	}
 
-	fn reserved_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::Balance {
+	fn reserved_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::BaseUnit {
 		Self::accounts(who, currency_id).reserved
 	}
 
@@ -750,7 +760,7 @@ impl<T: Config> Stp258CurrencyReservable<T::AccountId> for Pallet<T> {
 	/// balance.
 	///
 	/// Is a no-op if value to be reserved is zero.
-	fn reserve(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::Balance) -> DispatchResult {
+	fn reserve(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::BaseUnit) -> DispatchResult {
 		if value.is_zero() {
 			return Ok(());
 		}
@@ -768,7 +778,7 @@ impl<T: Config> Stp258CurrencyReservable<T::AccountId> for Pallet<T> {
 	/// unreserved.
 	///
 	/// Is a no-op if the value to be unreserved is zero.
-	fn unreserve(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::Balance) -> Self::Balance {
+	fn unreserve(currency_id: Self::CurrencyId, who: &T::AccountId, value: Self::BaseUnit) -> Self::BaseUnit {
 		if value.is_zero() {
 			return value;
 		}
@@ -792,9 +802,9 @@ impl<T: Config> Stp258CurrencyReservable<T::AccountId> for Pallet<T> {
 		currency_id: Self::CurrencyId,
 		slashed: &T::AccountId,
 		beneficiary: &T::AccountId,
-		value: Self::Balance,
+		value: Self::BaseUnit,
 		status: BalanceStatus,
-	) -> sp_std::result::Result<Self::Balance, DispatchError> {
+	) -> sp_std::result::Result<Self::BaseUnit, DispatchError> {
 		if value.is_zero() {
 			return Ok(value);
 		}
@@ -905,7 +915,7 @@ where
 		value: Self::Balance,
 		_existence_requirement: ExistenceRequirement,
 	) -> DispatchResult {
-		<Pallet<T> as Stp258Currency<T::AccountId>>::transfer(GetCurrencyId::get(), &source, &dest, value)
+		<Pallet<T> as Stp258StableCurrency<T::AccountId>>::transfer(GetCurrencyId::get(), &source, &dest, value)
 	}
 
 	fn slash(who: &T::AccountId, value: Self::Balance) -> (Self::NegativeImbalance, Self::Balance) {
@@ -1070,7 +1080,7 @@ impl<T: Config> MergeAccount<T::AccountId> for Pallet<T> {
 			ensure!(account_data.reserved.is_zero(), Error::<T>::StillHasActiveReserved);
 
 			// transfer all free to recipient
-			<Self as Stp258Currency<T::AccountId>>::transfer(currency_id, source, dest, account_data.free)?;
+			<Self as Stp258StableCurrency<T::AccountId>>::transfer(currency_id, source, dest, account_data.free)?;
 			Ok(())
 		})
 	}
