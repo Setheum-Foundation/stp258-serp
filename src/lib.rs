@@ -60,6 +60,7 @@ use stp258_traits::{
 	arithmetic::{self, Signed},
 	BalanceStatus, GetByKey, 
 	LockIdentifier, OnDust, 
+	SerpMarket,
 	Stp258Currency, 
 	Stp258CurrencyExtended, 
 	Stp258CurrencyReservable,
@@ -193,6 +194,23 @@ pub mod module {
 
 		/// Handler to burn or transfer account's dust
 		type OnDust: OnDust<Self::AccountId, Self::CurrencyId, Self::Balance>;
+
+		/// The base_unit of a c`currency_id`, i.e. cents of a dollar.
+		#[pallet::constant]
+		type GetBaseUnit: GetByKey<Self::CurrencyId, Self::Balance>;
+
+		/// The single unit of base_units.
+		#[pallet::constant]
+		type GetSingleUnit: Get<Self::Balance>;
+
+		/// The Serpers Account type
+		#[pallet::constant]
+		type GetSerperAcc: Get<Self::AccountId>;
+
+		/// The Serp quote multiple type for qUOTE, quoting 
+		/// `(mintrate * SERP_QUOTE_MULTIPLE) = SerpQuotedPrice`.
+		#[pallet::constant]
+		type GetSerpQuoteMultiple: Get<Self::Balance>;
 	}
 
 	#[pallet::error]
@@ -203,6 +221,8 @@ pub mod module {
 		BalanceOverflow,
 		/// This operation will cause total issuance to overflow
 		TotalIssuanceOverflow,
+		/// This operation will cause total issuance to underflow
+		TotalIssuanceUnderflow,
 		/// Cannot convert Amount into Balance type
 		AmountIntoBalanceFailed,
 		/// Failed because liquidity restrictions due to locking
@@ -475,6 +495,105 @@ impl<T: Config> Pallet<T> {
 	}
 }
 
+impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
+	type CurrencyId = T::CurrencyId;
+	type Balance = T::Balance;
+
+	/// Called when `expand_supply` is received from the SERP.
+	/// Implementation should `deposit` the `amount` to `serpup_to`, 
+	/// then `amount` will be slashed from `serpup_from` and update
+	/// `new_supply`. `quote_price` is the price ( relative to the settcurrency) of 
+	/// the `native_currency` used to expand settcurrency supply.
+	/// `who` is the account to serp with.
+	fn expand_supply(native_currency_id: Self::CurrencyId, stable_currency_id: Self::CurrencyId, expand_by: Self::Balance, quote_price: Self::Balance) -> DispatchResult {
+		if expand_by.is_zero() {
+			return Ok(());
+		}
+
+		let native_account = Self::accounts(serper, native_currency_id);
+
+		let stable_account = Self::accounts(serper, stable_currency_id);
+
+		let pay_by_quoted = Self::pay_serpup_by_quoted(stable_currency_id, expand_by, quote_price);
+
+		let serper = &T::GetSerperAcc::get();
+
+		let supply = <Self as Stp258Currency<_>>::total_issuance(stable_currency_id);
+		let new_supply = supply.saturating_add(expand_by);
+		let base_unit = T::GetBaseUnit:get();
+        let serp_quote_multiple = T::GetSerpQuoteMultiple::get();
+		let defloated = new_supply.saturating_mul_int(base_unit);
+		let new_base_price = defloated.saturating_div_int(supply);
+		let fractioned = new_base_price.saturating_sub(base_unit);
+		let quotation = fractioned.saturating_mul_int(serp_quote_multiple);
+		let serp_quoted_price = new_base_price.saturating_sub(quotation);;
+		let relative_price = quote_price / serp_quoted_price;
+		let pay_by_quoted = expand_by / relative_price;
+
+		<TotalIssuance<T>>::mutate(native_currency_id, |v| *v -= pay_by_quoted);
+		Self::set_reserved_balance(native_currency_id, serper, native_account.reserved - pay_by_quoted);
+
+		TotalIssuance::<T>::try_mutate(stable_currency_id, |total_issuance| -> DispatchResult {
+			*total_issuance = total_issuance
+				.checked_add(&expand_by)
+				.ok_or(Error::<T>::TotalIssuanceOverflow)?;
+
+			Self::set_reserved_balance(stable_currency_id, serper, stable_account.reserved + expand_by);
+			Ok(())
+		});
+
+		Ok(())
+	}
+
+	/// Called when `contract_supply` is received from the SERP.
+	/// Implementation should `deposit` the `base_currency_id` (The Native Currency) 
+	/// of `amount` to `serpup_to`, then `amount` will be slashed from `serpup_from` 
+	/// and update `new_supply`. `quote_price` is the price ( relative to the settcurrency) of 
+	/// the `native_currency` used to contract settcurrency supply.
+	/// `who` is the account to serp with.
+	fn contract_supply(native_currency_id: Self::CurrencyId, stable_currency_id: Self::CurrencyId, contract_by: Self::Balance, quote_price: Self::Balance) -> DispatchResult{
+		if contract_by.is_zero() {
+			return Ok(());
+		}
+
+		let native_account = Self::accounts(serper, native_currency_id);
+
+		let stable_account = Self::accounts(serper, stable_currency_id);
+
+		let pay_by_quoted = Self::pay_serpdown_by_quoted(stable_currency_id, contract_by, quote_price);
+		
+		let serper = &T::GetSerperAcc::get();
+
+		let supply = T::Stp258Currency::total_issuance(currency_id);
+		let new_supply = supply.saturating_sub(contract_by);
+		let base_unit = T::GetBaseUnit:get();
+        let serp_quote_multiple = T::GetSerpQuoteMultiple::get();
+		let defloated = new_supply.saturating_mul_int(base_unit);
+		let new_base_price = defloated.saturating_div_int(supply);
+		let fractioned = base_unit.saturating_sub(new_base_price);
+		let quotation = fractioned.saturating_mul_int(serp_quote_multiple);
+		let serp_quoted_price = quotation.saturating_add(new_base_price);
+		let relative_price = serp_quoted_price.saturating_div_int(quote_price);
+		let defloated_by_quoted = relative_price.saturating_mul_int(contract_by);
+		let pay_by_quoted = defloated_by_quoted.saturating_div_int(base_unit);
+		pay_by_quoted
+		
+		<TotalIssuance<T>>::mutate(stable_currency_id, |v| *v -= contract_by);
+		Self::set_reserved_balance(stable_currency_id, serper, stable_account.reserved -  contract_by);
+
+		TotalIssuance::<T>::try_mutate(native_currency_id, |total_issuance| -> DispatchResult {
+			*total_issuance = total_issuance
+				.checked_add(&pay_by_quoted)
+				.ok_or(Error::<T>::TotalIssuanceOverflow)?;
+
+			Self::set_reserved_balance(native_currency_id, serper, native_account.reserved + pay_by_quoted);
+			Ok(())
+		});
+
+		Ok(())
+	}
+}
+
 impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 	type CurrencyId = T::CurrencyId;
 	type Balance = T::Balance;
@@ -483,8 +602,8 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 		T::ExistentialDeposits::get(&currency_id)
 	}
 
-	fn total_issuance(currency_id: Self::CurrencyId) -> Self::Balance {
-		<TotalIssuance<T>>::get(currency_id)
+	fn base_unit(currency_id: Self::CurrencyId) -> Self::Balance {
+		T::GetBaseUnit::get(&currency_id)
 	}
 	
 	fn total_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::Balance {

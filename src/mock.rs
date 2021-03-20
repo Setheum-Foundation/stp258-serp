@@ -16,12 +16,13 @@ pub type AccountId = AccountId32;
 pub type CurrencyId = u32;
 pub type Balance = u64;
 
-pub const DOT: CurrencyId = 1;
-pub const BTC: CurrencyId = 2;
-pub const ETH: CurrencyId = 3;
+pub const DNAR: CurrencyId = 1;
+pub const JUSD: CurrencyId = 2;
+pub const JCHF: CurrencyId = 3;
 pub const ALICE: AccountId = AccountId32::new([0u8; 32]);
 pub const BOB: AccountId = AccountId32::new([1u8; 32]);
 pub const TREASURY_ACCOUNT: AccountId = AccountId32::new([2u8; 32]);
+pub const SERPER_ACC: AccountId = AccountId32::new([3u8; 32]);
 pub const ID_1: LockIdentifier = *b"1       ";
 pub const ID_2: LockIdentifier = *b"2       ";
 
@@ -96,7 +97,7 @@ parameter_types! {
 	pub const SpendPeriod: u64 = 2;
 	pub const Burn: Permill = Permill::from_percent(50);
 	pub const TreasuryModuleId: ModuleId = ModuleId(*b"py/trsry");
-	pub const GetTokenId: CurrencyId = DOT;
+	pub const GetTokenId: CurrencyId = DNAR;
 }
 
 impl pallet_treasury::Config for Runtime {
@@ -195,15 +196,30 @@ impl pallet_elections_phragmen::Config for Runtime {
 parameter_type_with_key! {
 	pub ExistentialDeposits: |currency_id: CurrencyId| -> Balance {
 		match currency_id {
-			&BTC => 1,
-			&DOT => 2,
+			&JUSD => 1,
+			&DNAR => 2,
 			_ => 0,
 		}
 	};
 }
 
+parameter_type_with_key! {
+	pub GetBaseUnit: |currency_id: CurrencyId| -> Balance {
+		match currency_id {
+			&JUSD => 1_000,
+			_ => 0,
+		}
+	};
+}
+
+const SERP_QUOTE_MULTIPLE: Balance = 2;
+const SINGLE_UNIT: Balance = 1;
+
 parameter_types! {
 	pub DustAccount: AccountId = ModuleId(*b"orml/dst").into_account();
+	pub const GetSerpQuoteMultiple: Balance = SERP_QUOTE_MULTIPLE;
+	pub const GetSerperAcc: AccountId = SERPER_ACC;
+	pub const GetSingleUnit: Balance = SINGLE_UNIT;
 }
 
 impl Config for Runtime {
@@ -214,6 +230,10 @@ impl Config for Runtime {
 	type WeightInfo = ();
 	type ExistentialDeposits = ExistentialDeposits;
 	type OnDust = TransferDust<Runtime, DustAccount>;
+	type GetSerpQuoteMultiple = GetSerpQuoteMultiple;
+	type GetBaseUnit = GetBaseUnit;
+	type GetSerperAcc = GetSerperAcc;
+	type GetSingleUnit = GetSingleUnit;
 }
 pub type TreasuryCurrencyAdapter = <Runtime as pallet_treasury::Config>::Currency;
 
@@ -253,13 +273,13 @@ impl ExtBuilder {
 		self
 	}
 
-	pub fn one_hundred_for_alice_n_bob(self) -> Self {
-		self.balances(vec![(ALICE, DOT, 100), (BOB, DOT, 100)])
+	pub fn one_hundred_for_alice_n_bob_n_serper(self) -> Self {
+		self.balances(vec![(ALICE, DNAR, 100), (BOB, DNAR, 100), (SERPER_ACC, DNAR, 100)])
 	}
 
 	pub fn one_hundred_for_treasury_account(mut self) -> Self {
 		self.treasury_genesis = true;
-		self.balances(vec![(TREASURY_ACCOUNT, DOT, 100)])
+		self.balances(vec![(TREASURY_ACCOUNT, DNAR, 100)])
 	}
 
 	pub fn build(self) -> sp_io::TestExternalities {
