@@ -221,8 +221,6 @@ pub mod module {
 		BalanceOverflow,
 		/// This operation will cause total issuance to overflow
 		TotalIssuanceOverflow,
-		/// This operation will cause total issuance to underflow
-		TotalIssuanceUnderflow,
 		/// Cannot convert Amount into Balance type
 		AmountIntoBalanceFailed,
 		/// Failed because liquidity restrictions due to locking
@@ -510,17 +508,18 @@ impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
 			return Ok(());
 		}
 
+		let serper = &T::GetSerperAcc::get();
+
 		let native_account = Self::accounts(serper, native_currency_id);
 
 		let stable_account = Self::accounts(serper, stable_currency_id);
 
 		let pay_by_quoted = Self::pay_serpup_by_quoted(stable_currency_id, expand_by, quote_price);
 
-		let serper = &T::GetSerperAcc::get();
+		let base_unit = <Self as Stp258Currency<_>>::base_unit(&stable_currency_id);
 
 		let supply = <Self as Stp258Currency<_>>::total_issuance(stable_currency_id);
 		let new_supply = supply.saturating_add(expand_by);
-		let base_unit = T::GetBaseUnit:get();
         let serp_quote_multiple = T::GetSerpQuoteMultiple::get();
 		let defloated = new_supply.saturating_mul_int(base_unit);
 		let new_base_price = defloated.saturating_div_int(supply);
@@ -604,6 +603,11 @@ impl<T: Config> Stp258Currency<T::AccountId> for Pallet<T> {
 
 	fn base_unit(currency_id: Self::CurrencyId) -> Self::Balance {
 		T::GetBaseUnit::get(&currency_id)
+	}
+
+	/// The total amount of issuance of `currency_id`.
+	fn total_issuance(currency_id: Self::CurrencyId) -> Self::Balance{
+		T::TotalIssuance::get(&currency_id)
 	}
 	
 	fn total_balance(currency_id: Self::CurrencyId, who: &T::AccountId) -> Self::Balance {
