@@ -555,15 +555,15 @@ impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
 			return Ok(());
 		}
 
+		let serper = &T::GetSerperAcc::get();
+
 		let native_account = Self::accounts(serper, native_currency_id);
 
 		let stable_account = Self::accounts(serper, stable_currency_id);
 
 		let pay_by_quoted = Self::pay_serpdown_by_quoted(stable_currency_id, contract_by, quote_price);
 		
-		let serper = &T::GetSerperAcc::get();
-
-		let supply = T::Stp258Currency::total_issuance(currency_id);
+		let supply = T::Stp258Currency::total_issuance(stable_currency_id);
 		let new_supply = supply.saturating_sub(contract_by);
 		let base_unit = T::GetBaseUnit:get();
         let serp_quote_multiple = T::GetSerpQuoteMultiple::get();
@@ -575,7 +575,6 @@ impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
 		let relative_price = serp_quoted_price.saturating_div_int(quote_price);
 		let defloated_by_quoted = relative_price.saturating_mul_int(contract_by);
 		let pay_by_quoted = defloated_by_quoted.saturating_div_int(base_unit);
-		pay_by_quoted
 		
 		<TotalIssuance<T>>::mutate(stable_currency_id, |v| *v -= contract_by);
 		Self::set_reserved_balance(stable_currency_id, serper, stable_account.reserved -  contract_by);
