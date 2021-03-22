@@ -231,6 +231,9 @@ parameter_types! {
 	pub const GetSingleUnit: Balance = SINGLE_UNIT;
 	pub const GetSerperRatio: Perbill = SERPER_RATIO;
 	pub const GetSettPayRatio: Perbill = SETT_PAY_RATIO;
+	pub const GetTheSettCurrencyId: CurrencyId = SETT;
+	pub const GetJusdCurrencyId: CurrencyId = JUSD;
+	pub const GetNativeCurrencyId: CurrencyId = DNAR;
 }
 
 impl Config for Runtime {
@@ -246,6 +249,9 @@ impl Config for Runtime {
 	type GetSettPayAcc = GetSettPayAcc;
 	type GetSerperRatio = GetSerperRatio;
 	type GetSettPayRatio = GetSettPayRatio;
+	type GetTheSettCurrencyId = GetTheSettCurrencyId;
+	type GetJusdCurrencyId = GetJusdCurrencyId;
+	type GetNativeCurrencyId = GetNativeCurrencyId;
 	type GetSingleUnit = GetSingleUnit;
 	type OnDust = TransferDust<Runtime, DustAccount>;
 }

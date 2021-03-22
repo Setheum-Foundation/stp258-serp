@@ -58,9 +58,12 @@ use frame_system::{ensure_signed, pallet_prelude::*};
 use stp258_traits::{
 	account::MergeAccount,
 	arithmetic::{self, Signed},
-	BalanceStatus, GetByKey, 
+	BalanceStatus, 
+	ElastAdjustmentFrequency, 
+	FetchPrice, GetByKey, 
 	LockIdentifier, OnDust, 
 	SerpMarket,
+	SerpTes, 
 	Stp258Currency, 
 	Stp258CurrencyExtended, 
 	Stp258CurrencyReservable,
@@ -213,6 +216,19 @@ pub mod module {
 		/// The multiple number for the serp quote.
 		type GetSerpQuoteMultiple: Get<Self::Balance>;
 
+		type CoinPrice: FetchPrice<u64>;
+
+		type AdjustmentFrequency: Get<<Self as frame_system::Config>::BlockNumber>;
+
+		/// The Setheum Dinar native asset currency id (DNAR).
+		type GetNativeCurrencyId: Get<Self::CurrencyId>;
+
+		/// The Setheum Sett stable currency id (SETT).
+		type GetTheSettCurrencyId: Get<Self::CurrencyId>;
+
+		/// The US Dollar stable currency id (JUSD).
+		type GetJusdCurrencyId: Get<Self::CurrencyId>;
+
 		/// Handler to burn or transfer account's dust
 		type OnDust: OnDust<Self::AccountId, Self::CurrencyId, Self::Balance>;
 	}
@@ -292,7 +308,7 @@ pub mod module {
 			GenesisConfig {
 				endowed_accounts: vec![],
 			}
-		}
+		} 
 	}
 
 	#[pallet::genesis_build]
@@ -372,6 +388,23 @@ pub mod module {
 
 			Self::deposit_event(Event::Transferred(currency_id, from, to, balance));
 			Ok(().into())
+		}
+
+		/// Adjust the amount of Coins according to the price.
+		///
+		/// **Weight:**
+		/// - complexity: `O(F + P)`
+		///   - `F` being the complexity of `CoinPrice::fetch_price()`
+		///   - `P` being the complexity of `on_block_with_price`
+		fn on_initialize(now: T::BlockNumber) {
+			let sett_price = T::CoinPrice::fetch_sett_price();
+			let jusd_price = T::CoinPrice::fetch_jusd_price();
+
+            let sett_currency_id = T::GetSettCurrencyId::get();
+            let jusd_currency_id = T::GetSettCurrencyId::get();
+			Self::on_serp_initialize(now, sett_price, sett_currency_id, jusd_price, jusd_currency_id).unwrap_or_else(|e| {
+				native::error!("could not adjust supply: {:?}", e);
+			});
 		}
 	}
 }
@@ -497,6 +530,83 @@ impl<T: Config> Pallet<T> {
 	}
 }
 
+impl<T: Config> SerpTes<T::Blocknumber> for Pallet<T> {
+	type CurrencyId = T::CurrencyId;
+	type Balance = T::Balance;
+
+        fn on_serp_initialize(now: T::BlockNumber, sett_price: u64, sett_currency_id: T::CurrencyId; jusd_price: u64; jusd_currency_id: T::CurrencyId) -> DispatchResult {
+
+            let sett_price_on_block = Self::on_block_with_price(now, sett_price, sett_currency_id).unwrap_or_else(|e| {
+				native::error!("could not adjust supply: {:?}", e);
+			});
+            let jusd_price_on_block = Self::on_block_with_price(now, jusd_price, jusd_currency_id).unwrap_or_else(|e| {
+				native::error!("could not adjust supply: {:?}", e);
+			});
+
+			Self::on_block_with_price(now, price).unwrap_or_else(|e| {
+				native::error!("could not adjust supply: {:?}", e);
+			});
+		}
+
+		/// Contracts or expands the currency supply based on conditions.
+		fn on_block_with_price(block: &T::Blocknumber, price: Self::Balance, currency_id: Self::CurrencyId) -> DispatchResult {
+			// This can be changed to only correct for small or big price swings.
+			let serp_elast_adjuster = T::AdjustmentFrequency::get();
+			if block % serp_elast_adjuster == 0.into() {
+				Self::serp_elast(currency_id, price)
+			} else {
+				Ok(())
+			}
+		}
+
+		fn adjustment_frequency() -> Result<(), &'static str> {
+			T::AdjustmentFrequency::get()
+		}
+
+		/// Calculate the amount of supply change from a fraction.
+		fn supply_change(currency_id:  Self::CurrencyId, new_price: Self::Balance) -> Self::Balance {
+			let base_unit = T::GetBaseUnit::get(&currency_id);
+			let supply = <Self as Stp258Currency<T::AccountId>>::total_issuance(currency_id);
+			let fraction = new_price * supply;
+			let fractioned = fraction / base_unit;
+			fractioned - supply;
+		}
+
+		/// Expands (if the price is too high) or contracts (if the price is too low) the SettCurrency supply.
+		///
+		/// **Weight:**
+		/// - complexity: `O(S + C)`
+		///   - `S` being the complexity of executing either `expand_supply` or `contract_supply`
+		///   - `C` being a constant amount of storage reads for SettCurrency supply
+		/// - DB access:
+		///   - 1 read for total_issuance
+		///   - execute `expand_supply` OR execute `contract_supply` which have DB accesses
+		#[weight = 0]
+		fn serp_elast(currency_id: CurrencyId, price: Balance) -> DispatchResult {
+			let base_unit = T::GetBaseUnit;
+			match price {
+				0 => {
+					native::error!("currency price is zero!");
+					return Err(DispatchError::from(Error::<T>::ZeroPrice));
+				}
+				price if price > base_unit => {
+					// safe from underflow because `price` is checked to be less than `GetBaseUnit`
+					let expand_by = Self::supply_change(currency_id, price);
+					<Self as Stp258Currency<_>>expand_supply(currency_id, expand_by, price)?;
+				}
+				price if price < base_unit => {
+					// safe from underflow because `price` is checked to be greater than `GetBaseUnit`
+					let contract_by = Self::supply_change(currency_id, price);
+					<Self as Stp258Currency<_>>contract_supply(currency_id, expand_by, price)?;
+				}
+				_ => {
+					native::info!("settcurrency price is equal to base as is desired --> nothing to do");
+				}
+			}
+			Ok(())
+		}
+}
+
 impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
 	type CurrencyId = T::CurrencyId;
 	type Balance = T::Balance;
@@ -518,6 +628,7 @@ impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
 			return Ok(());
 		}
 
+		let native_currency_id = T::GetNativeCurrencyId::get();
 		let native_account = Self::accounts(serpers, native_currency_id);
 		let stable_account = Self::accounts(serpers, stable_currency_id);
 
