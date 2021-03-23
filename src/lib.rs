@@ -498,9 +498,6 @@ impl<T: Config> Pallet<T> {
 }
 
 impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
-	type CurrencyId = T::CurrencyId;
-	type Balance = T::Balance;
-
 	/// Called when `expand_supply` is received from the SERP.
 	/// Implementation should `deposit` the `amount` to `serpup_to`, 
 	/// then `amount` will be slashed from `serpup_from` and update
