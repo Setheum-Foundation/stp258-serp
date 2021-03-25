@@ -58,7 +58,7 @@ use frame_system::{ensure_signed, pallet_prelude::*};
 use stp258_traits::{
 	account::MergeAccount,
 	arithmetic::{self, Signed},
-	BalanceStatus, FetchPrice, 
+	BalanceStatus, 
 	GetByKey, LockIdentifier, 
 	OnDust, SerpMarket, SerpTes,
 	Stp258Currency, 
@@ -240,6 +240,8 @@ pub mod module {
 		LiquidityRestrictions,
 		/// Account still has active reserved
 		StillHasActiveReserved,
+		/// Something went wrong and the price is Zero
+		ZeroPrice,
 	}
 
 	#[pallet::event]
@@ -251,6 +253,11 @@ pub mod module {
 		/// ExistentialDeposit, resulting in an outright loss. \[account,
 		/// currency_id, amount\]
 		DustLost(T::AccountId, T::CurrencyId, T::Balance),
+		/// Supply Expansion Successful. \[currency_id, expand_by\]
+		SerpedUpSupply(T::CurrencyId, T::Balance),
+		/// Supply Contraction Successful. \[currency_id, contract_by\]
+		SerpedDownSupply(T::CurrencyId, T::Balance),
+	}
 	}
 
 	/// The total issuance of a token type.
@@ -504,6 +511,114 @@ impl<T: Config> Pallet<T> {
 			}
 		}
 	}
+}
+
+impl<T: Config> SerpTes<T::AccountId, T::BlockNumber> for Pallet<T> {
+	/// Contracts or expands the currency supply based on conditions.
+	/// Filters through the conditions to see whether it's time to adjust supply or not.
+	fn on_serp_block(
+		block: T::BlockNumber, 
+		stable_currency_id: Self::CurrencyId,
+		stable_currency_price: Self::Balance, 
+		native_currency_price: Self::Balance, 
+	) -> DispatchResult {
+		// This can be changed to only correct for small or big price swings.
+		let serp_elast_adjuster = T::AdjustmentFrequency::get();
+		if serp_elast_adjuster > 0 && block % serp_elast_adjuster == 0 {
+			Self::serp_elast(stable_currency_id, stable_currency_price, native_currency_price)
+		} else {
+			Ok(())
+		}
+	}
+
+	/// Calculate the amount of supply change from a fraction.
+	fn supply_change(currency_id:  Self::CurrencyId, new_price: Self::Balance) -> Self::Balance {
+		let base_unit = <Self as Stp258Currency<T::AccountId>>::base_unit(currency_id);
+		let supply = <Self as Stp258Currency<T::AccountId>>::total_issuance(currency_id);
+		let fraction = new_price * supply;
+		let fractioned = fraction / base_unit;
+		fractioned - supply;
+	}
+
+	/// Expands (if the price is above pegbase) or contracts (if the price is below pegbase) 
+	/// the supply of SettCurrencies.
+	///
+	/// **Weight:**
+	/// - complexity: `O(S + C)`
+	///   - `S` being the complexity of executing either `expand_supply` or `contract_supply`
+	///   - `C` being a constant amount of storage reads for SettCurrency supply
+	/// - DB access:
+	///   - 1 read for total_issuance
+	///   - execute `expand_supply` OR execute `contract_supply` which have DB accesses
+	fn serp_elast(stable_currency_id: CurrencyId, stable_currency_price: Balance, native_currency_price: Balance) -> DispatchResult {
+		let base_unit = <Self as Stp258Currency<T::AccountId>>::base_unit(currency_id);
+		match stable_currency_price {
+			0 => {
+				log!(info, "💸 Error!! Settcurrency: ({:?}) price is zero.", currency_id);
+				return Err(DispatchError::from(Error::<T>::ZeroPrice));
+			}
+			stable_currency_price if stable_currency_price > base_unit => {
+				// safe from underflow because `price` is checked to be less than `GetBaseUnit`
+				let expand_by = Self::supply_change(stable_currency_id, stable_currency_price);
+				Self::on_expand_supply(stable_currency_id, expand_by, native_currency_price)?;
+			}
+			stable_currency_price if stable_currency_price < base_unit => {
+				// safe from underflow because `price` is checked to be greater than `GetBaseUnit`
+				let contract_by = Self::supply_change(stable_currency_id, stable_currency_price);
+				Self::on_contract_supply(stable_currency_id, contract_by, native_currency_price)?;
+			}
+			_ => {
+				log!(info, "💸 settcurrency price is stable to pegbase as is desired --> no serping to do for ({:?}).", currency_id);
+			}
+		}
+		Ok(())
+	}
+
+	/// This just returns the Serpers/Serping pool's account id.
+	///
+	fn on_serpers() -> AccountId{
+		T::GetSerperAcc::get()
+	}
+
+    /// On Expand Supply, this is going to call `expand_supply`.
+	/// This is often called by the `serp_elast` from the `SerpTes` trait.
+	///
+	fn on_expand_supply(
+		currency_id: Self::CurrencyId, 
+		expand_by: Self::Balance, 
+		quote_price: Self::Balance, 
+	) -> DispatchResult {
+        let native_currency_id = T::GetSerpNativeId::get();
+        let serpers = Self::on_serpers()
+        let pay_by_quoted = <Self as SerpMarket<T::AccountId>>::pay_serpup_by_quoted(
+            currency_id, expand_by, quote_price,
+        );
+        <Self as SerpMarket<T::AccountId>>::expand_supply(
+            native_currency_id, currency_id, expand_by, pay_by_quoted, serpers,
+        );                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+        Self::deposit_event(Event::SerpedUpSupply(currency_id, expand_by));
+        Ok(().into())
+    }
+
+    /// On Contract Supply, this is going to call `contract_supply`.
+	/// This is often called by the `serp_elast` from the `SerpTes` trait.
+	///
+    fn on_contract_supply(
+		currency_id: Self::CurrencyId, 
+		contract_by: Self::Balance, 
+		quote_price: Self::Balance, 
+	) -> DispatchResult {
+        let native_currency_id = T::GetSerpNativeId::get();
+        let serpers = Self::on_serpers()
+        let pay_by_quoted = <Self as SerpMarket<T::AccountId>>::pay_serpdown_by_quoted(
+            currency_id, contract_by, quote_price,
+        );
+        <Self as SerpMarket<T::AccountId>>::contract_supply(
+            native_currency_id, currency_id, contract_by, pay_by_quoted, serpers,
+        );                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+        Self::deposit_event(Event::SerpedDowmSupply(currency_id, contract_by));
+        Ok(().into())
+    }
 }
 
 impl<T: Config> SerpMarket<T::AccountId> for Pallet<T> {
