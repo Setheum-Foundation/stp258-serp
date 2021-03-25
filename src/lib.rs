@@ -58,9 +58,9 @@ use frame_system::{ensure_signed, pallet_prelude::*};
 use stp258_traits::{
 	account::MergeAccount,
 	arithmetic::{self, Signed},
-	BalanceStatus, GetByKey, 
-	LockIdentifier, OnDust, 
-	SerpMarket,
+	BalanceStatus, FetchPrice, 
+	GetByKey, LockIdentifier, 
+	OnDust, SerpMarket, SerpTes,
 	Stp258Currency, 
 	Stp258CurrencyExtended, 
 	Stp258CurrencyReservable,
@@ -194,6 +194,15 @@ pub mod module {
 
 		/// The base unit of a currency
 		type GetBaseUnit: GetByKey<Self::CurrencyId, Self::Balance>;
+
+		/// The native currency for serping
+		type GetSerpNativeId: Get<Self::CurrencyId>;
+
+		/// The native currency for serping
+		type GetSettId: Get<Self::CurrencyId>;
+		
+		/// The native currency for serping
+		type GetJusdId: Get<Self::CurrencyId>;
 
 		/// The base unit of a currency
 		type GetSingleUnit: Get<Self::Balance>;

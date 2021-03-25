@@ -231,6 +231,9 @@ parameter_types! {
 	pub const GetSingleUnit: Balance = SINGLE_UNIT;
 	pub const GetSerperRatio: Perbill = SERPER_RATIO;
 	pub const GetSettPayRatio: Perbill = SETT_PAY_RATIO;
+	pub const GetSerpNativeId: CurrencyId = DNAR;
+	pub const GetSettId: CurrencyId = SETT;
+	pub const GetJusdId: CurrencyId = JUSD;
 }
 
 impl Config for Runtime {
@@ -241,6 +244,9 @@ impl Config for Runtime {
 	type WeightInfo = ();
 	type ExistentialDeposits = ExistentialDeposits;
 	type GetBaseUnit = GetBaseUnit;
+	type GetSerpNativeId = GetSerpNativeId;
+	type GetSettId = GetSerpNativeId;
+	type GetJusdId = GetSerpNativeId;
 	type GetSerpQuoteMultiple = GetSerpQuoteMultiple;
 	type GetSerperAcc = GetSerperAcc;
 	type GetSettPayAcc = GetSettPayAcc;
